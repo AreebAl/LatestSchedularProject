@@ -133,8 +133,9 @@ public class ResourceApiService {
     /**
      * Scheduled station resource sync job
      * Runs every 24 hours
+     * Initial delay ensures site sync completes first
      */
-    @Scheduled(fixedRate = STATION_SYNC_INTERVAL_MS)
+    @Scheduled(fixedRate = STATION_SYNC_INTERVAL_MS, initialDelay = 300000) // 5 minutes delay
     public void scheduledStationResourceSync() {
         if (!resourceSyncEnabled) {
             logger.debug("Resource sync is disabled, skipping scheduled station resource sync");
@@ -155,8 +156,9 @@ public class ResourceApiService {
     /**
      * Scheduled hunt group resource sync job
      * Runs every 24 hours
+     * Initial delay ensures site sync completes first
      */
-    @Scheduled(fixedRate = HUNTGROUP_SYNC_INTERVAL_MS)
+    @Scheduled(fixedRate = HUNTGROUP_SYNC_INTERVAL_MS, initialDelay = 300000) // 5 minutes delay
     public void scheduledHuntGroupResourceSync() {
         if (!resourceSyncEnabled) {
             logger.debug("Resource sync is disabled, skipping scheduled hunt group resource sync");
@@ -177,8 +179,9 @@ public class ResourceApiService {
     /**
      * Scheduled pickup group resource sync job
      * Runs every 24 hours
+     * Initial delay ensures site sync completes first
      */
-    @Scheduled(fixedRate = PICKUPGROUP_SYNC_INTERVAL_MS)
+    @Scheduled(fixedRate = PICKUPGROUP_SYNC_INTERVAL_MS, initialDelay = 300000) // 5 minutes delay
     public void scheduledPickupGroupResourceSync() {
         if (!resourceSyncEnabled) {
             logger.debug("Resource sync is disabled, skipping scheduled pickup group resource sync");
