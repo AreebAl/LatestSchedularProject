@@ -10,16 +10,6 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
-/**
- * Service for managing scheduled tasks in the AMFK Starfish Sync application
- * 
- * This service handles the scheduling and execution of background jobs including:
- * - Regular API calls to external services
- * - Site synchronization jobs that pull data from master service and STARFISH API
- * 
- * The service uses Spring's @Scheduled annotation to configure task execution
- * and provides methods to query scheduling information.
- */
 @Service
 public class ScheduledTaskService {
     
@@ -32,11 +22,6 @@ public class ScheduledTaskService {
     @Value("${site.sync.enabled:true}")
     private boolean siteSyncEnabled;
     
-    /**
-     * Constructor for ScheduledTaskService
-     * 
-     * @param siteSyncService Service for site synchronization operations
-     */
     @Autowired
     public ScheduledTaskService(SiteSyncService siteSyncService) {
         this.siteSyncService = siteSyncService;
@@ -44,16 +29,6 @@ public class ScheduledTaskService {
     
 
     
-    /**
-     * Scheduled method that executes site synchronization jobs
-     * 
-     * This method is scheduled using fixed rate (every 2 minutes).
-     * It checks if site sync is enabled before executing, and if enabled,
-     * calls the site synchronization service to pull data from master service
-     * and STARFISH API.
-     * 
-     * The method includes error handling and logging for monitoring purposes.
-     */
     @Scheduled(fixedRate = SCHEDULE_INTERVAL_MS)
     public void scheduledSiteSync() {
         if (!siteSyncEnabled) {

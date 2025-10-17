@@ -19,12 +19,15 @@ public class SiteSyncService {
     
     private final MasterServiceClient masterServiceClient;
     private final MockApiService mockApiService;
+    private final DatabaseUpdateService databaseUpdateService;
     
     @Autowired
     public SiteSyncService(MasterServiceClient masterServiceClient,
-                          MockApiService mockApiService) {
+                          MockApiService mockApiService,
+                          DatabaseUpdateService databaseUpdateService) {
         this.masterServiceClient = masterServiceClient;
         this.mockApiService = mockApiService;
+        this.databaseUpdateService = databaseUpdateService;
     }
     
     public String syncSites() {
@@ -65,10 +68,17 @@ public class SiteSyncService {
                     if (mockResponse != null && !mockResponse.isEmpty()) {
                         logger.info("Successfully retrieved Mock API data for site: {} - Response: {}", 
                             siteName, mockResponse);
-                        successCount++;
                         
-                        // Log the mock response data
-                        logger.debug("Mock API data for site {}: {}", siteName, mockResponse);
+                        // Step 3: Update database with Mock API response
+                        logger.info("Step 3: Updating database with Mock API response for site: {}", siteName);
+                        try {
+                            databaseUpdateService.updateDatabaseFromMockApi(mockResponse);
+                            logger.info("Successfully updated database for site: {}", siteName);
+                            successCount++;
+                        } catch (Exception dbException) {
+                            logger.error("Failed to update database for site {}: {}", siteName, dbException.getMessage(), dbException);
+                            failureCount++;
+                        }
                         
                     } else {
                         logger.warn("No Mock API data found for site: {} ({})", siteName, siteId);
@@ -87,9 +97,9 @@ public class SiteSyncService {
                 }
             }
             
-            logger.info("Processed {} sites from Master Service API with Mock API calls", processedCount);
+            logger.info("Processed {} sites from Master Service API with Mock API calls and database updates", processedCount);
             
-            String result = String.format("Site sync completed successfully. Processed: %d, Success: %d, Failed: %d (Mock API calls)", 
+            String result = String.format("Site sync completed successfully. Processed: %d, Success: %d, Failed: %d (Mock API calls + DB updates)", 
                 processedCount, successCount, failureCount);
             
             logger.info(result);
