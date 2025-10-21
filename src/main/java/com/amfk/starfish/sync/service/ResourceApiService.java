@@ -1,5 +1,6 @@
 package com.amfk.starfish.sync.service;
 
+import com.amfk.starfish.sync.dto.SiteDto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +25,12 @@ public class ResourceApiService {
     
     @Autowired
     private RestTemplate restTemplate;
+    
+    @Autowired
+    private MasterServiceClient masterServiceClient;
+    
+    @Autowired
+    private MockApiService mockApiService;
     
     @Value("${mock.api.base.url}")
     private String mockApiBaseUrl;
@@ -131,69 +138,168 @@ public class ResourceApiService {
     }
     
     /**
-     * Scheduled station resource sync job
+     * Scheduled resource sync job - syncs all resource types
      * Runs every 24 hours
      */
-    @Scheduled(fixedRate = STATION_SYNC_INTERVAL_MS, initialDelay = 180000) // 5 minutes delay
-    public void scheduledStationResourceSync() {
+    @Scheduled(fixedRate = STATION_SYNC_INTERVAL_MS, initialDelay = 180000) // 3 minutes delay
+    public void scheduledResourceSync() {
         if (!resourceSyncEnabled) {
-            logger.debug("Resource sync is disabled, skipping scheduled station resource sync");
+            logger.debug("Resource sync is disabled, skipping scheduled resource sync");
             return;
         }
         
         String currentTime = LocalDateTime.now().format(formatter);
-        logger.info("Starting scheduled station resource sync job at: {}", currentTime);
+        logger.info("Starting scheduled resource sync job at: {}", currentTime);
         
         try {
-            String result = syncStationResources();
-            logger.info("Completed scheduled station resource sync job at: {} with result: {}", currentTime, result);
+            String result = syncAllResources();
+            logger.info("Completed scheduled resource sync job at: {} with result: {}", currentTime, result);
         } catch (Exception e) {
-            logger.error("Scheduled station resource sync job failed at {}: {}", currentTime, e.getMessage(), e);
+            logger.error("Scheduled resource sync job failed at {}: {}", currentTime, e.getMessage(), e);
         }
     }
     
     /**
-     * Scheduled hunt group resource sync job
-     * Runs every 24 hours
+     * Sync all resources (station, hunt group, pickup group) for all sites
+     * This method fetches sites once and then syncs all resource types
      */
-    @Scheduled(fixedRate = HUNTGROUP_SYNC_INTERVAL_MS, initialDelay = 180000) // 3 minutes delay
-    public void scheduledHuntGroupResourceSync() {
-        if (!resourceSyncEnabled) {
-            logger.debug("Resource sync is disabled, skipping scheduled hunt group resource sync");
-            return;
-        }
+    public String syncAllResources() {
+        logger.info("Starting complete resource synchronization for all resource types");
         
-        String currentTime = LocalDateTime.now().format(formatter);
-        logger.info("Starting scheduled hunt group resource sync job at: {}", currentTime);
+        int stationSuccessCount = 0;
+        int stationFailureCount = 0;
+        int huntGroupSuccessCount = 0;
+        int huntGroupFailureCount = 0;
+        int pickupGroupSuccessCount = 0;
+        int pickupGroupFailureCount = 0;
         
         try {
-            String result = syncHuntGroupResources();
-            logger.info("Completed scheduled hunt group resource sync job at: {} with result: {}", currentTime, result);
+            // Step 1: Fetch all sites from Master Service (ONLY ONCE)
+            logger.info("Fetching sites from Master Service for all resource types");
+            List<SiteDto> sites = masterServiceClient.getSites();
+            
+            if (sites == null || sites.isEmpty()) {
+                logger.warn("No sites found from Master Service, skipping all resource sync");
+                return "All resource sync skipped - No sites available";
+            }
+            
+            logger.info("Found {} sites, fetching CM details and syncing all resource types", sites.size());
+            
+            // Step 2: For each site, get CM details and sync all resource types
+            for (SiteDto site : sites) {
+                try {
+                    String clusterName = site.getSiteName();
+                    logger.info("Processing site: {} for all resource types", clusterName);
+                    
+                    // Get site details from Mock API
+                    List<Map<String, Object>> mockResponse = mockApiService.getSiteDetails(clusterName);
+                    
+                    if (mockResponse != null && !mockResponse.isEmpty()) {
+                        // Extract CM names from Mock API response
+                        for (Map<String, Object> siteData : mockResponse) {
+                            Object resultsObj = siteData.get("Results");
+                            if (resultsObj instanceof List) {
+                                List<Map<String, Object>> results = (List<Map<String, Object>>) resultsObj;
+                                
+                                for (Map<String, Object> result : results) {
+                                    String cmName = result.get("CM") != null ? result.get("CM").toString() : null;
+                                    
+                                    if (cmName != null && !cmName.trim().isEmpty()) {
+                                        logger.info("Found CM: {} for site: {}, syncing all resource types", cmName, clusterName);
+                                        
+                                        // Step 3a: Sync STATION resources for this CM
+                                        logger.debug("Syncing station resources for CM: {}", cmName);
+                                        List<String> stationIdList = Arrays.asList(stationIds.split(","));
+                                        for (String resourceId : stationIdList) {
+                                            try {
+                                                Map<String, Object> apiResult = getStationResource(resourceId.trim(), cmName);
+                                                if ("success".equals(apiResult.get("status"))) {
+                                                    stationSuccessCount++;
+                                                    logger.debug("Successfully synced station resource: {} on CM: {}", resourceId, cmName);
+                                                } else {
+                                                    stationFailureCount++;
+                                                    logger.warn("Failed to sync station resource: {} on CM: {} - {}", 
+                                                        resourceId, cmName, apiResult.get("message"));
+                                                }
+                                            } catch (Exception e) {
+                                                stationFailureCount++;
+                                                logger.error("Error syncing station resource: {} on CM: {} - {}", 
+                                                    resourceId, cmName, e.getMessage());
+                                            }
+                                        }
+                                        
+                                        // Step 3b: Sync HUNT GROUP resources for this CM
+                                        logger.debug("Syncing hunt group resources for CM: {}", cmName);
+                                        List<String> huntGroupIdList = Arrays.asList(huntGroupIds.split(","));
+                                        for (String resourceId : huntGroupIdList) {
+                                            try {
+                                                Map<String, Object> apiResult = getHuntGroupResource(resourceId.trim(), cmName);
+                                                if ("success".equals(apiResult.get("status"))) {
+                                                    huntGroupSuccessCount++;
+                                                    logger.debug("Successfully synced hunt group resource: {} on CM: {}", resourceId, cmName);
+                                                } else {
+                                                    huntGroupFailureCount++;
+                                                    logger.warn("Failed to sync hunt group resource: {} on CM: {} - {}", 
+                                                        resourceId, cmName, apiResult.get("message"));
+                                                }
+                                            } catch (Exception e) {
+                                                huntGroupFailureCount++;
+                                                logger.error("Error syncing hunt group resource: {} on CM: {} - {}", 
+                                                    resourceId, cmName, e.getMessage());
+                                            }
+                                        }
+                                        
+                                        // Step 3c: Sync PICKUP GROUP resources for this CM
+                                        logger.debug("Syncing pickup group resources for CM: {}", cmName);
+                                        List<String> pickupGroupIdList = Arrays.asList(pickupGroupIds.split(","));
+                                        for (String resourceId : pickupGroupIdList) {
+                                            try {
+                                                Map<String, Object> apiResult = getPickupGroupResource(resourceId.trim(), cmName);
+                                                if ("success".equals(apiResult.get("status"))) {
+                                                    pickupGroupSuccessCount++;
+                                                    logger.debug("Successfully synced pickup group resource: {} on CM: {}", resourceId, cmName);
+                                                } else {
+                                                    pickupGroupFailureCount++;
+                                                    logger.warn("Failed to sync pickup group resource: {} on CM: {} - {}", 
+                                                        resourceId, cmName, apiResult.get("message"));
+                                                }
+                                            } catch (Exception e) {
+                                                pickupGroupFailureCount++;
+                                                logger.error("Error syncing pickup group resource: {} on CM: {} - {}", 
+                                                    resourceId, cmName, e.getMessage());
+                                            }
+                                        }
+                                        
+                                        logger.info("Completed all resource types for CM: {} (Station: {}/{}, HuntGroup: {}/{}, PickupGroup: {}/{})", 
+                                            cmName, stationSuccessCount, stationFailureCount, 
+                                            huntGroupSuccessCount, huntGroupFailureCount,
+                                            pickupGroupSuccessCount, pickupGroupFailureCount);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        logger.warn("No Mock API response for site: {}", clusterName);
+                    }
+                    
+                } catch (Exception e) {
+                    logger.error("Error processing site {}: {}", site.getSiteName(), e.getMessage(), e);
+                }
+            }
+            
         } catch (Exception e) {
-            logger.error("Scheduled hunt group resource sync job failed at {}: {}", currentTime, e.getMessage(), e);
-        }
-    }
-    
-    /**
-     * Scheduled pickup group resource sync job
-     * Runs every 24 hours
-     */
-    @Scheduled(fixedRate = PICKUPGROUP_SYNC_INTERVAL_MS, initialDelay = 180000) // 3 minutes delay
-    public void scheduledPickupGroupResourceSync() {
-        if (!resourceSyncEnabled) {
-            logger.debug("Resource sync is disabled, skipping scheduled pickup group resource sync");
-            return;
+            logger.error("Error during complete resource synchronization: {}", e.getMessage(), e);
+            return "Complete resource sync failed: " + e.getMessage();
         }
         
-        String currentTime = LocalDateTime.now().format(formatter);
-        logger.info("Starting scheduled pickup group resource sync job at: {}", currentTime);
-        
-        try {
-            String result = syncPickupGroupResources();
-            logger.info("Completed scheduled pickup group resource sync job at: {} with result: {}", currentTime, result);
-        } catch (Exception e) {
-            logger.error("Scheduled pickup group resource sync job failed at {}: {}", currentTime, e.getMessage(), e);
-        }
+        String result = String.format(
+            "All resources sync completed. Station (Success: %d, Failed: %d), HuntGroup (Success: %d, Failed: %d), PickupGroup (Success: %d, Failed: %d)",
+            stationSuccessCount, stationFailureCount,
+            huntGroupSuccessCount, huntGroupFailureCount,
+            pickupGroupSuccessCount, pickupGroupFailureCount
+        );
+        logger.info(result);
+        return result;
     }
     
     /**
@@ -202,30 +308,78 @@ public class ResourceApiService {
     public String syncStationResources() {
         logger.info("Starting station resource synchronization");
         
-        List<String> stationIdList = Arrays.asList(stationIds.split(","));
-        List<String> serverNameList = Arrays.asList(serverNames.split(","));
-        
         int successCount = 0;
         int failureCount = 0;
         
-        for (String serverName : serverNameList) {
-            for (String resourceId : stationIdList) {
+        try {
+            // Step 1: Fetch all sites from Master Service
+            logger.info("Fetching sites from Master Service for station resource sync");
+            List<SiteDto> sites = masterServiceClient.getSites();
+            
+            if (sites == null || sites.isEmpty()) {
+                logger.warn("No sites found from Master Service, skipping station resource sync");
+                return "Station resource sync skipped - No sites available";
+            }
+            
+            logger.info("Found {} sites, fetching CM details from Mock API", sites.size());
+            
+            // Step 2: For each site, get CM details from Mock API
+            for (SiteDto site : sites) {
                 try {
-                    Map<String, Object> result = getStationResource(resourceId.trim(), serverName.trim());
-                    if ("success".equals(result.get("status"))) {
-                        successCount++;
-                        logger.debug("Successfully synced station resource: {} on server: {}", resourceId, serverName);
+                    String clusterName = site.getSiteName();
+                    logger.debug("Processing site: {}", clusterName);
+                    
+                    // Get site details from Mock API
+                    List<Map<String, Object>> mockResponse = mockApiService.getSiteDetails(clusterName);
+                    
+                    if (mockResponse != null && !mockResponse.isEmpty()) {
+                        // Extract CM names from Mock API response
+                        for (Map<String, Object> siteData : mockResponse) {
+                            Object resultsObj = siteData.get("Results");
+                            if (resultsObj instanceof List) {
+                                List<Map<String, Object>> results = (List<Map<String, Object>>) resultsObj;
+                                
+                                for (Map<String, Object> result : results) {
+                                    String cmName = result.get("CM") != null ? result.get("CM").toString() : null;
+                                    
+                                    if (cmName != null && !cmName.trim().isEmpty()) {
+                                        logger.debug("Found CM: {} for site: {}", cmName, clusterName);
+                                        
+                                        // Step 3: Sync station resources for this CM
+                                        List<String> stationIdList = Arrays.asList(stationIds.split(","));
+                                        for (String resourceId : stationIdList) {
+                                            try {
+                                                Map<String, Object> apiResult = getStationResource(resourceId.trim(), cmName);
+                                                if ("success".equals(apiResult.get("status"))) {
+                                                    successCount++;
+                                                    logger.debug("Successfully synced station resource: {} on CM: {}", resourceId, cmName);
+                                                } else {
+                                                    failureCount++;
+                                                    logger.warn("Failed to sync station resource: {} on CM: {} - {}", 
+                                                        resourceId, cmName, apiResult.get("message"));
+                                                }
+                                            } catch (Exception e) {
+                                                failureCount++;
+                                                logger.error("Error syncing station resource: {} on CM: {} - {}", 
+                                                    resourceId, cmName, e.getMessage());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     } else {
-                        failureCount++;
-                        logger.warn("Failed to sync station resource: {} on server: {} - {}", 
-                            resourceId, serverName, result.get("message"));
+                        logger.warn("No Mock API response for site: {}", clusterName);
                     }
+                    
                 } catch (Exception e) {
-                    failureCount++;
-                    logger.error("Error syncing station resource: {} on server: {} - {}", 
-                        resourceId, serverName, e.getMessage());
+                    logger.error("Error processing site {}: {}", site.getSiteName(), e.getMessage(), e);
                 }
             }
+            
+        } catch (Exception e) {
+            logger.error("Error during station resource synchronization: {}", e.getMessage(), e);
+            return "Station resource sync failed: " + e.getMessage();
         }
         
         String result = String.format("Station resource sync completed. Success: %d, Failed: %d", successCount, failureCount);
@@ -239,30 +393,78 @@ public class ResourceApiService {
     public String syncHuntGroupResources() {
         logger.info("Starting hunt group resource synchronization");
         
-        List<String> huntGroupIdList = Arrays.asList(huntGroupIds.split(","));
-        List<String> serverNameList = Arrays.asList(serverNames.split(","));
-        
         int successCount = 0;
         int failureCount = 0;
         
-        for (String serverName : serverNameList) {
-            for (String resourceId : huntGroupIdList) {
+        try {
+            // Step 1: Fetch all sites from Master Service
+            logger.info("Fetching sites from Master Service for hunt group resource sync");
+            List<SiteDto> sites = masterServiceClient.getSites();
+            
+            if (sites == null || sites.isEmpty()) {
+                logger.warn("No sites found from Master Service, skipping hunt group resource sync");
+                return "Hunt group resource sync skipped - No sites available";
+            }
+            
+            logger.info("Found {} sites, fetching CM details from Mock API", sites.size());
+            
+            // Step 2: For each site, get CM details from Mock API
+            for (SiteDto site : sites) {
                 try {
-                    Map<String, Object> result = getHuntGroupResource(resourceId.trim(), serverName.trim());
-                    if ("success".equals(result.get("status"))) {
-                        successCount++;
-                        logger.debug("Successfully synced hunt group resource: {} on server: {}", resourceId, serverName);
+                    String clusterName = site.getSiteName();
+                    logger.debug("Processing site: {}", clusterName);
+                    
+                    // Get site details from Mock API
+                    List<Map<String, Object>> mockResponse = mockApiService.getSiteDetails(clusterName);
+                    
+                    if (mockResponse != null && !mockResponse.isEmpty()) {
+                        // Extract CM names from Mock API response
+                        for (Map<String, Object> siteData : mockResponse) {
+                            Object resultsObj = siteData.get("Results");
+                            if (resultsObj instanceof List) {
+                                List<Map<String, Object>> results = (List<Map<String, Object>>) resultsObj;
+                                
+                                for (Map<String, Object> result : results) {
+                                    String cmName = result.get("CM") != null ? result.get("CM").toString() : null;
+                                    
+                                    if (cmName != null && !cmName.trim().isEmpty()) {
+                                        logger.debug("Found CM: {} for site: {}", cmName, clusterName);
+                                        
+                                        // Step 3: Sync hunt group resources for this CM
+                                        List<String> huntGroupIdList = Arrays.asList(huntGroupIds.split(","));
+                                        for (String resourceId : huntGroupIdList) {
+                                            try {
+                                                Map<String, Object> apiResult = getHuntGroupResource(resourceId.trim(), cmName);
+                                                if ("success".equals(apiResult.get("status"))) {
+                                                    successCount++;
+                                                    logger.debug("Successfully synced hunt group resource: {} on CM: {}", resourceId, cmName);
+                                                } else {
+                                                    failureCount++;
+                                                    logger.warn("Failed to sync hunt group resource: {} on CM: {} - {}", 
+                                                        resourceId, cmName, apiResult.get("message"));
+                                                }
+                                            } catch (Exception e) {
+                                                failureCount++;
+                                                logger.error("Error syncing hunt group resource: {} on CM: {} - {}", 
+                                                    resourceId, cmName, e.getMessage());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     } else {
-                        failureCount++;
-                        logger.warn("Failed to sync hunt group resource: {} on server: {} - {}", 
-                            resourceId, serverName, result.get("message"));
+                        logger.warn("No Mock API response for site: {}", clusterName);
                     }
+                    
                 } catch (Exception e) {
-                    failureCount++;
-                    logger.error("Error syncing hunt group resource: {} on server: {} - {}", 
-                        resourceId, serverName, e.getMessage());
+                    logger.error("Error processing site {}: {}", site.getSiteName(), e.getMessage(), e);
                 }
             }
+            
+        } catch (Exception e) {
+            logger.error("Error during hunt group resource synchronization: {}", e.getMessage(), e);
+            return "Hunt group resource sync failed: " + e.getMessage();
         }
         
         String result = String.format("Hunt group resource sync completed. Success: %d, Failed: %d", successCount, failureCount);
@@ -276,30 +478,78 @@ public class ResourceApiService {
     public String syncPickupGroupResources() {
         logger.info("Starting pickup group resource synchronization");
         
-        List<String> pickupGroupIdList = Arrays.asList(pickupGroupIds.split(","));
-        List<String> serverNameList = Arrays.asList(serverNames.split(","));
-        
         int successCount = 0;
         int failureCount = 0;
         
-        for (String serverName : serverNameList) {
-            for (String resourceId : pickupGroupIdList) {
+        try {
+            // Step 1: Fetch all sites from Master Service
+            logger.info("Fetching sites from Master Service for pickup group resource sync");
+            List<SiteDto> sites = masterServiceClient.getSites();
+            
+            if (sites == null || sites.isEmpty()) {
+                logger.warn("No sites found from Master Service, skipping pickup group resource sync");
+                return "Pickup group resource sync skipped - No sites available";
+            }
+            
+            logger.info("Found {} sites, fetching CM details from Mock API", sites.size());
+            
+            // Step 2: For each site, get CM details from Mock API
+            for (SiteDto site : sites) {
                 try {
-                    Map<String, Object> result = getPickupGroupResource(resourceId.trim(), serverName.trim());
-                    if ("success".equals(result.get("status"))) {
-                        successCount++;
-                        logger.debug("Successfully synced pickup group resource: {} on server: {}", resourceId, serverName);
+                    String clusterName = site.getSiteName();
+                    logger.debug("Processing site: {}", clusterName);
+                    
+                    // Get site details from Mock API
+                    List<Map<String, Object>> mockResponse = mockApiService.getSiteDetails(clusterName);
+                    
+                    if (mockResponse != null && !mockResponse.isEmpty()) {
+                        // Extract CM names from Mock API response
+                        for (Map<String, Object> siteData : mockResponse) {
+                            Object resultsObj = siteData.get("Results");
+                            if (resultsObj instanceof List) {
+                                List<Map<String, Object>> results = (List<Map<String, Object>>) resultsObj;
+                                
+                                for (Map<String, Object> result : results) {
+                                    String cmName = result.get("CM") != null ? result.get("CM").toString() : null;
+                                    
+                                    if (cmName != null && !cmName.trim().isEmpty()) {
+                                        logger.debug("Found CM: {} for site: {}", cmName, clusterName);
+                                        
+                                        // Step 3: Sync pickup group resources for this CM
+                                        List<String> pickupGroupIdList = Arrays.asList(pickupGroupIds.split(","));
+                                        for (String resourceId : pickupGroupIdList) {
+                                            try {
+                                                Map<String, Object> apiResult = getPickupGroupResource(resourceId.trim(), cmName);
+                                                if ("success".equals(apiResult.get("status"))) {
+                                                    successCount++;
+                                                    logger.debug("Successfully synced pickup group resource: {} on CM: {}", resourceId, cmName);
+                                                } else {
+                                                    failureCount++;
+                                                    logger.warn("Failed to sync pickup group resource: {} on CM: {} - {}", 
+                                                        resourceId, cmName, apiResult.get("message"));
+                                                }
+                                            } catch (Exception e) {
+                                                failureCount++;
+                                                logger.error("Error syncing pickup group resource: {} on CM: {} - {}", 
+                                                    resourceId, cmName, e.getMessage());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     } else {
-                        failureCount++;
-                        logger.warn("Failed to sync pickup group resource: {} on server: {} - {}", 
-                            resourceId, serverName, result.get("message"));
+                        logger.warn("No Mock API response for site: {}", clusterName);
                     }
+                    
                 } catch (Exception e) {
-                    failureCount++;
-                    logger.error("Error syncing pickup group resource: {} on server: {} - {}", 
-                        resourceId, serverName, e.getMessage());
+                    logger.error("Error processing site {}: {}", site.getSiteName(), e.getMessage(), e);
                 }
             }
+            
+        } catch (Exception e) {
+            logger.error("Error during pickup group resource synchronization: {}", e.getMessage(), e);
+            return "Pickup group resource sync failed: " + e.getMessage();
         }
         
         String result = String.format("Pickup group resource sync completed. Success: %d, Failed: %d", successCount, failureCount);
