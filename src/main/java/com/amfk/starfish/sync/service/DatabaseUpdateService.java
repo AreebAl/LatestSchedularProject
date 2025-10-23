@@ -51,25 +51,36 @@ public class DatabaseUpdateService {
      */
     private void processSiteData(Map<String, Object> siteData) {
         try {
-            String siteName = getStringValue(siteData, "Site");
-            String cmName = getStringValue(siteData, "CM");
-            
-            if (siteName == null || siteName.isEmpty()) {
-                logger.warn("Site name is null or empty, skipping this record");
+            Object resultsObj = siteData.get("Results");
+            if (resultsObj == null) {
+                logger.warn("No 'Results' field found in site data, skipping this record");
                 return;
             }
             
-            logger.info("Processing site: {} with CM: {}", siteName, cmName);
-      
-            // Update pbx_system table
-            updatePbxSystemFromMockApi(siteName, cmName);
+            if (!(resultsObj instanceof List)) {
+                logger.warn("'Results' field is not a List, skipping this record");
+                return;
+            }
             
-            // Process ranges for pbx_number_range table
-            List<Map<String, Object>> ranges = getListValue(siteData, "Ranges");
-            if (ranges != null && !ranges.isEmpty()) {
-                updatePbxNumberRanges(siteName, cmName, ranges);
-                // Process extensions for pbx_number_reserved table
-                updatePbxNumberReserved(siteName, cmName, ranges);
+            List<Map<String, Object>> results = (List<Map<String, Object>>) resultsObj;
+            
+            for (Map<String, Object> result : results) {
+                String siteName = getStringValue(result, "Site");
+                String cmName = getStringValue(result, "CM");
+                
+                if (siteName == null || siteName.isEmpty()) {
+                    logger.warn("Site name is null or empty, skipping this record");
+                    continue;
+                }
+                
+                logger.info("Processing site: {} with CM: {}", siteName, cmName);
+          
+                updatePbxSystemFromMockApi(siteName, cmName);
+                List<Map<String, Object>> ranges = getListValue(result, "Ranges");
+                if (ranges != null && !ranges.isEmpty()) {
+                    updatePbxNumberRanges(siteName, cmName, ranges);
+                    updatePbxNumberReserved(siteName, cmName, ranges);
+                }
             }
             
         } catch (Exception e) {
@@ -152,8 +163,14 @@ public class DatabaseUpdateService {
             for (Map<String, Object> range : ranges) {
                 try {
                     String type = getStringValue(range, "Type");
-                    String lowerbound = getStringValue(range, "Lowerbound");
-                    String upperbound = getStringValue(range, "Upperbound");
+                    String lowerbound = getStringValue(range, "LowerBound");
+                    if (lowerbound == null) {
+                        lowerbound = getStringValue(range, "Lowerbound");
+                    }
+                    String upperbound = getStringValue(range, "UpperBound");
+                    if (upperbound == null) {
+                        upperbound = getStringValue(range, "Upperbound");
+                    }
                     
                     if (type == null || lowerbound == null || upperbound == null) {
                         logger.warn("Skipping range with missing required fields: {}", range);
