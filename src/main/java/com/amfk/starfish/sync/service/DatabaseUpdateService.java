@@ -309,9 +309,19 @@ public class DatabaseUpdateService {
     private Integer getPhoneNumberTypeId(String typeName) {
         try {
             String sql = "SELECT id FROM pbx_phone_number_type WHERE name = ?";
-            return jdbcTemplate.queryForObject(sql, Integer.class, typeName);
+            try {
+                Integer id = jdbcTemplate.queryForObject(sql, Integer.class, typeName);
+                logger.debug("Found phone_number_type ID: {} for type: {}", id, typeName);
+                return id;
+            } catch (Exception e) {
+                logger.debug("Exact match failed for type: {}, trying case-insensitive match", typeName);
+                String sqlCaseInsensitive = "SELECT id FROM pbx_phone_number_type WHERE LOWER(name) = LOWER(?)";
+                Integer id = jdbcTemplate.queryForObject(sqlCaseInsensitive, Integer.class, typeName);
+                logger.debug("Found phone_number_type ID: {} for type: {} (case-insensitive match)", id, typeName);
+                return id;
+            }
         } catch (Exception e) {
-            logger.warn("Error getting phone_number_type ID for type: {}", typeName);
+            logger.warn("Error getting phone_number_type ID for type: '{}'. Error: {}", typeName, e.getMessage());
             return null;
         }
     }
